@@ -1,4 +1,5 @@
-import { simpleGit } from "simple-git";
+import git from "isomorphic-git";
+import http from "isomorphic-git/http/node";
 import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
@@ -103,6 +104,25 @@ async function walk(dir: string, root: string, out: RepoFile[]) {
   }
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms
+    );
+    promise.then(
+      (val) => {
+        clearTimeout(timer);
+        resolve(val);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
 export class CloneError extends Error {}
 
 export async function cloneAndIndex(
@@ -111,14 +131,23 @@ export async function cloneAndIndex(
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "repochat-"));
 
   try {
-    const git = simpleGit({ timeout: { block: CLONE_TIMEOUT_MS } });
-
     try {
-      await git.clone(cloneUrl, tmpDir, ["--depth", "1", "--single-branch"]);
+      await withTimeout(
+        git.clone({
+          fs,
+          http,
+          dir: tmpDir,
+          url: cloneUrl,
+          depth: 1,
+          singleBranch: true,
+          noTags: true,
+        }),
+        CLONE_TIMEOUT_MS,
+        "Clone"
+      );
     } catch (err) {
       const raw = err instanceof Error ? err.message : "";
-      const notFound =
-        /could not read username|repository not found|not found/i.test(raw);
+      const notFound = /not found|404|could not find/i.test(raw);
       throw new CloneError(
         notFound
           ? "That repo couldn't be found. Check the URL and make sure it's public."
